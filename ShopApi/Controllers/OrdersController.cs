@@ -3,221 +3,91 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopApi.Data;
-using ShopApi.DTOs;
 using ShopApi.Models;
 
 namespace ShopApi.Controllers;
 
 [ApiController]
-[Route("api/v1/shop/[controller]")]
-[Authorize]
-public class CartController : ControllerBase
+[Route("api/v1/shop/orders")]
+public sealed class OrdersController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly AppDbContext _db;
+    public OrdersController(AppDbContext db) => _db = db;
 
-    public CartController(AppDbContext context)
-    {
-        _context = context;
-    }
-
+    [Authorize]
     [HttpGet]
-    public async Task<ActionResult<ApiResponse<object>>> GetCart()
+    public async Task<IActionResult> GetOrders(CancellationToken ct)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        var guestSessionId = GetGuestSessionId();
-
-        var query = _context.CartItems
-            .Include(ci => ci.Product)
-            .Where(ci => (userId != null && ci.UserId == userId) || (!string.IsNullOrWhiteSpace(guestSessionId) && ci.GuestSessionId == guestSessionId));
-
-        var cartItems = await query
-            .Select(ci => new CartItemDto(
-                ci.ProductId,
-                ci.Quantity,
-                new ProductDto(
-                    ci.Product!.Id,
-                    ci.Product.Title,
-                    ci.Product.Category,
-                    ci.Product.CategoryTitle,
-                    ci.Product.ShortDesc,
-                    ci.Product.FullDesc,
-                    ci.Product.Price,
-                    ci.Product.OriginalPrice,
-                    ci.Product.Badge,
-                    ci.Product.ImageUrl,
-                    ci.Product.AuthorOrPublisher,
-                    ci.Product.Pages,
-                    ci.Product.Rating,
-                    ci.Product.Stock,
-                    ci.Product.IsActive),
-                ci.Product.Price,
-                ci.Product.Price * ci.Quantity))
-            .ToListAsync();
-
-        var summary = new CartSummaryDto(
-            cartItems.Sum(x => x.Quantity),
-            cartItems.Sum(x => x.TotalPrice),
-            0m,
-            0m,
-            cartItems.Sum(x => x.TotalPrice));
-
-        return Ok(new ApiResponse<object>(true, new { items = cartItems, summary }, "Cart loaded successfully."));
+        if (userId is null) return Unauthorized();
+        var orders = await _db.Orders.AsNoTracking().Where(o => o.UserId == userId)
+            .OrderByDescending(o => o.CreatedAt).Select(o => new { o.Id, date = o.CreatedAt,
+                o.TrackingNumber, o.Status, o.TotalPayable, o.ItemsPrice, o.DiscountAmount, o.ShippingFee,
+                customer = new { fullName = o.CustomerName, phone = o.CustomerPhone, o.Province, o.City,
+                    postalAddress = o.PostalAddress, postalCode = o.PostalCode, o.Notes },
+                items = o.Items.Select(i => new { i.ProductId, title = i.ProductTitle, i.Quantity,
+                    unitPrice = i.UnitPrice, i.TotalPrice }) })
+            .ToListAsync(ct);
+        return Ok(new { success = true, data = orders, message = "Orders retrieved successfully." });
     }
 
-    [HttpPost("items")]
-    public async Task<ActionResult<ApiResponse<object>>> AddToCart([FromBody] AddCartItemRequestDto request)
+    [Authorize]
+    [HttpPost]
+    public async Task<IActionResult> CreateOrder([FromBody] CheckoutInput request, CancellationToken ct)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        var guestSessionId = GetGuestSessionId();
+        if (userId is null) return Unauthorized();
+        if (request.Customer is null || string.IsNullOrWhiteSpace(request.Customer.FullName) ||
+            string.IsNullOrWhiteSpace(request.Customer.Phone) || string.IsNullOrWhiteSpace(request.Customer.Province) ||
+            string.IsNullOrWhiteSpace(request.Customer.City) || string.IsNullOrWhiteSpace(request.Customer.PostalAddress))
+            return BadRequest(Failure("INVALID_INPUT", "Recipient name, phone, province, city, and postal address are required."));
+        if (request.PaymentMethod is not ("zarinpal" or "saman" or "card_to_card" or "cod"))
+            return BadRequest(Failure("INVALID_PAYMENT_METHOD", "Unsupported payment method."));
 
-        if (request.Quantity <= 0)
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        var cart = await _db.CartItems.Include(x => x.Product).Where(x => x.UserId == userId).ToListAsync(ct);
+        if (cart.Count == 0) return BadRequest(Failure("EMPTY_CART", "Your cart is empty."));
+        if (cart.Any(x => x.Product is null || !x.Product.IsActive || x.Quantity > x.Product.Stock))
+            return Conflict(Failure("OUT_OF_STOCK", "One or more products are unavailable or have insufficient stock."));
+
+        var order = new Order { Id = $"TB-{Guid.NewGuid():N}"[..13].ToUpperInvariant(), UserId = userId,
+            CustomerName = request.Customer.FullName.Trim(), CustomerPhone = request.Customer.Phone.Trim(),
+            Province = request.Customer.Province.Trim(), City = request.Customer.City.Trim(),
+            PostalAddress = request.Customer.PostalAddress.Trim(), PostalCode = request.Customer.PostalCode,
+            Notes = request.Customer.Notes, PaymentMethod = request.PaymentMethod, Status = "pending_payment",
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow };
+        foreach (var line in cart)
         {
-            return BadRequest(new ApiResponse<object>(false, null, "Quantity must be greater than zero."));
+            var product = line.Product!;
+            var amount = product.Price * line.Quantity;
+            order.ItemsPrice += product.OriginalPrice * line.Quantity;
+            order.DiscountAmount += Math.Max(0m, product.OriginalPrice - product.Price) * line.Quantity;
+            order.Items.Add(new OrderItem { OrderId = order.Id, ProductId = product.Id, ProductTitle = product.Title,
+                Quantity = line.Quantity, UnitPrice = product.Price, TotalPrice = amount });
+            // Reserve stock while payment is pending; failed mock payments restore it below.
+            product.Stock -= line.Quantity;
         }
-
-        var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == request.ProductId);
-        if (product is null)
-        {
-            return NotFound(new ApiResponse<object>(false, null, "Product not found."));
-        }
-
-        if (request.Quantity > product.Stock)
-        {
-            return BadRequest(new ApiResponse<object>(false, null, "Requested quantity exceeds available stock."));
-        }
-
-        var existingItem = await _context.CartItems.FirstOrDefaultAsync(ci =>
-            ci.ProductId == request.ProductId &&
-            ((userId != null && ci.UserId == userId) || (!string.IsNullOrWhiteSpace(guestSessionId) && ci.GuestSessionId == guestSessionId)));
-
-        if (existingItem is not null)
-        {
-            var newQty = existingItem.Quantity + request.Quantity;
-            if (newQty > product.Stock)
-            {
-                return BadRequest(new ApiResponse<object>(false, null, "Cart quantity exceeds available stock."));
-            }
-
-            existingItem.Quantity = newQty;
-            existingItem.UpdatedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
-
-            return Ok(new ApiResponse<object>(true, existingItem, "Product quantity updated in cart."));
-        }
-
-        var item = new CartItem
-        {
-            UserId = userId,
-            GuestSessionId = guestSessionId,
-            ProductId = request.ProductId,
-            Quantity = request.Quantity,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
-
-        _context.CartItems.Add(item);
-        await _context.SaveChangesAsync();
-
-        return Ok(new ApiResponse<object>(true, item, "Product added to cart."));
-    }
-
-    [HttpPut("items/{productId:int}")]
-    public async Task<ActionResult<ApiResponse<object>>> UpdateCartItem(int productId, [FromBody] UpdateCartItemRequestDto request)
-    {
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        var guestSessionId = GetGuestSessionId();
-
-        var item = await _context.CartItems
-            .Include(ci => ci.Product)
-            .FirstOrDefaultAsync(ci => ci.ProductId == productId &&
-                ((userId != null && ci.UserId == userId) || (!string.IsNullOrWhiteSpace(guestSessionId) && ci.GuestSessionId == guestSessionId)));
-
-        if (item is null)
-        {
-            return NotFound(new ApiResponse<object>(false, null, "Cart item not found."));
-        }
-
-        var nextQuantity = item.Quantity + request.Delta;
-        if (nextQuantity <= 0)
-        {
-            _context.CartItems.Remove(item);
-            await _context.SaveChangesAsync();
-            return Ok(new ApiResponse<object>(true, null, "Cart item removed."));
-        }
-
-        if (item.Product is not null && nextQuantity > item.Product.Stock)
-        {
-            return BadRequest(new ApiResponse<object>(false, null, "Requested quantity exceeds available stock."));
-        }
-
-        item.Quantity = nextQuantity;
-        item.UpdatedAt = DateTime.UtcNow;
-        await _context.SaveChangesAsync();
-
-        return Ok(new ApiResponse<object>(true, item, "Cart item updated."));
-    }
-
-    [HttpDelete("items/{productId:int}")]
-    public async Task<ActionResult<ApiResponse<object>>> RemoveFromCart(int productId)
-    {
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        var guestSessionId = GetGuestSessionId();
-
-        var item = await _context.CartItems.FirstOrDefaultAsync(ci => ci.ProductId == productId &&
-            ((userId != null && ci.UserId == userId) || (!string.IsNullOrWhiteSpace(guestSessionId) && ci.GuestSessionId == guestSessionId)));
-
-        if (item is null)
-        {
-            return NotFound(new ApiResponse<object>(false, null, "Cart item not found."));
-        }
-
-        _context.CartItems.Remove(item);
-        await _context.SaveChangesAsync();
-
-        return Ok(new ApiResponse<object>(true, null, "Cart item removed."));
-    }
-
-    [HttpDelete]
-    public async Task<ActionResult<ApiResponse<object>>> ClearCart()
-    {
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        var guestSessionId = GetGuestSessionId();
-
-        var items = await _context.CartItems
-            .Where(ci => (userId != null && ci.UserId == userId) || (!string.IsNullOrWhiteSpace(guestSessionId) && ci.GuestSessionId == guestSessionId))
-            .ToListAsync();
-
-        if (items.Count == 0)
-        {
-            return Ok(new ApiResponse<object>(true, null, "Cart already empty."));
-        }
-
-        _context.CartItems.RemoveRange(items);
-        await _context.SaveChangesAsync();
-
-        return Ok(new ApiResponse<object>(true, null, "Cart cleared successfully."));
+        order.ShippingFee = order.Items.Sum(i => i.TotalPrice) >= 400000m ? 0m : 35000m;
+        order.TotalPayable = order.Items.Sum(i => i.TotalPrice) + order.ShippingFee;
+        _db.Orders.Add(order); _db.CartItems.RemoveRange(cart);
+        await _db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        return StatusCode(201, new { success = true, data = new { orderId = order.Id, trackingNumber = (string?)null,
+            totalPayable = order.TotalPayable, status = order.Status,
+            paymentUrl = $"/api/v1/shop/payment/request" }, message = "Order created successfully." });
     }
 
     [AllowAnonymous]
-    [HttpPost("shipping/calculate")]
-    public ActionResult<ApiResponse<ShippingCalculateResponseDto>> CalculateShipping([FromBody] ShippingCalculateRequestDto request)
+    [HttpGet("track/{trackingNumber}")]
+    public async Task<IActionResult> TrackOrder(string trackingNumber, CancellationToken ct)
     {
-        var shippingFee = request.CartAmount >= 400000m ? 0m : 35000m;
-        var isFreeShipping = shippingFee == 0m;
-
-        return Ok(new ApiResponse<ShippingCalculateResponseDto>(
-            true,
-            new ShippingCalculateResponseDto(shippingFee, isFreeShipping, 400000m, Math.Max(0m, 400000m - request.CartAmount)),
-            "Shipping fee calculated successfully."));
+        var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.TrackingNumber == trackingNumber, ct);
+        if (order is null) return NotFound(Failure("TRACKING_NOT_FOUND", "Shipment tracking number not found."));
+        return Ok(new { success = true, data = new { trackingNumber, order.Status, order.UpdatedAt,
+            message = "This is the shop order status; carrier tracking requires a postal service integration." } });
     }
 
-    private string? GetGuestSessionId()
-    {
-        if (Request.Headers.TryGetValue("X-Session-ID", out var value))
-        {
-            return value.ToString();
-        }
-
-        return null;
-    }
+    private static object Failure(string code, string message) => new { success = false, error = new { code, message, details = (object?)null } };
 }
+
+public sealed record CustomerInput(string FullName, string Phone, string Province, string City, string PostalAddress, string? PostalCode, string? Notes);
+public sealed record CheckoutInput(CustomerInput Customer, string PaymentMethod = "zarinpal");

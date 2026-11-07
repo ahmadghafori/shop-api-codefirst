@@ -1,217 +1,106 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopApi.Data;
-using ShopApi.DTOs;
 using ShopApi.Models;
 
 namespace ShopApi.Controllers;
 
 [ApiController]
-[Route("api/v1/shop/[controller]")]
-public class ProductsController : ControllerBase
+[AllowAnonymous]
+[Route("api/v1/shop/cart")]
+public sealed class CartController : ControllerBase
 {
-    private readonly AppDbContext _context;
-
-    public ProductsController(AppDbContext context)
-    {
-        _context = context;
-    }
+    private const decimal FreeShippingThreshold = 400000m;
+    private const decimal StandardShippingFee = 35000m;
+    private readonly AppDbContext _db;
+    public CartController(AppDbContext db) => _db = db;
 
     [HttpGet]
-    public async Task<ActionResult<ApiResponse<IEnumerable<ProductDto>>>> GetProducts(
-        [FromQuery] string? category,
-        [FromQuery] string? search,
-        [FromQuery] int page = 1,
-        [FromQuery] int limit = 20)
+    public async Task<IActionResult> GetCart(CancellationToken ct)
     {
-        if (page < 1) page = 1;
-        if (limit < 1) limit = 20;
-
-        var query = _context.Products.AsQueryable();
-
-        if (!string.IsNullOrWhiteSpace(category) && category != "all")
-        {
-            query = query.Where(p => p.Category == category);
-        }
-
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var normalized = search.Trim();
-            query = query.Where(p =>
-                p.Title.Contains(normalized) ||
-                p.CategoryTitle.Contains(normalized) ||
-                p.ShortDesc.Contains(normalized) ||
-                p.AuthorOrPublisher != null && p.AuthorOrPublisher.Contains(normalized));
-        }
-
-        var total = await query.CountAsync();
-
-        var items = await query
-            .OrderByDescending(p => p.IsActive)
-            .ThenByDescending(p => p.Rating)
-            .Skip((page - 1) * limit)
-            .Take(limit)
-            .Select(p => new ProductDto(
-                p.Id,
-                p.Title,
-                p.Category,
-                p.CategoryTitle,
-                p.ShortDesc,
-                p.FullDesc,
-                p.Price,
-                p.OriginalPrice,
-                p.Badge,
-                p.ImageUrl,
-                p.AuthorOrPublisher,
-                p.Pages,
-                p.Rating,
-                p.Stock,
-                p.IsActive))
-            .ToListAsync();
-
-        return Ok(new ApiResponse<IEnumerable<ProductDto>>(
-            true,
-            items,
-            "Products retrieved successfully.",
-            new { total, page, limit }));
+        if (!TryGetCartOwner(out var userId, out var guestId, out var error)) return error!;
+        var rows = await CartQuery(userId, guestId).AsNoTracking().ToListAsync(ct);
+        var items = rows.Select(x => new { productId = x.ProductId, quantity = x.Quantity,
+            product = new { x.Product!.Id, x.Product.Title, x.Product.Category, x.Product.CategoryTitle,
+                desc = x.Product.ShortDesc, fullDesc = x.Product.FullDesc, x.Product.Price,
+                x.Product.OriginalPrice, x.Product.Badge, image = x.Product.ImageUrl,
+                x.Product.AuthorOrPublisher, x.Product.Pages, x.Product.Rating, x.Product.Stock, x.Product.IsActive },
+            unitPrice = x.Product!.Price, totalPrice = x.Product.Price * x.Quantity }).ToList();
+        var current = items.Sum(x => x.totalPrice);
+        var regular = rows.Sum(x => x.Product!.OriginalPrice * x.Quantity);
+        var discount = Math.Max(0m, regular - current);
+        var shipping = current >= FreeShippingThreshold ? 0m : StandardShippingFee;
+        return Ok(new { success = true, data = new { items, summary = new {
+            itemsCount = items.Sum(x => x.quantity), itemsPrice = regular, discountAmount = discount,
+            shippingFee = shipping, totalPayable = current + shipping } }, message = "Cart loaded successfully." });
     }
 
-    [HttpGet("{id:int}")]
-    public async Task<ActionResult<ApiResponse<ProductDto>>> GetProductById(int id)
+    [HttpPost("items")]
+    public async Task<IActionResult> AddItem([FromBody] CartItemInput request, CancellationToken ct)
     {
-        var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == id);
-        if (product is null)
-        {
-            return NotFound(new ApiResponse<ProductDto>(false, null, "Product not found."));
-        }
-
-        return Ok(new ApiResponse<ProductDto>(true, new ProductDto(
-            product.Id,
-            product.Title,
-            product.Category,
-            product.CategoryTitle,
-            product.ShortDesc,
-            product.FullDesc,
-            product.Price,
-            product.OriginalPrice,
-            product.Badge,
-            product.ImageUrl,
-            product.AuthorOrPublisher,
-            product.Pages,
-            product.Rating,
-            product.Stock,
-            product.IsActive), "Product retrieved successfully."));
+        if (!TryGetCartOwner(out var userId, out var guestId, out var error)) return error!;
+        if (request.ProductId <= 0 || request.Quantity <= 0) return BadRequest(Failure("INVALID_INPUT", "Product ID and positive quantity are required."));
+        var product = await _db.Products.FirstOrDefaultAsync(p => p.Id == request.ProductId && p.IsActive, ct);
+        if (product is null) return NotFound(Failure("PRODUCT_NOT_FOUND", "Product not found."));
+        var item = await CartQuery(userId, guestId).FirstOrDefaultAsync(x => x.ProductId == request.ProductId, ct);
+        if ((item?.Quantity ?? 0) + request.Quantity > product.Stock) return Conflict(Failure("OUT_OF_STOCK", "Requested quantity exceeds available stock."));
+        if (item is null) _db.CartItems.Add(item = new CartItem { ProductId = product.Id, UserId = userId, GuestSessionId = guestId, Quantity = request.Quantity });
+        else { item.Quantity += request.Quantity; item.UpdatedAt = DateTime.UtcNow; }
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { success = true, data = new { productId = item.ProductId, quantity = item.Quantity }, message = "Product added to cart." });
     }
 
-    [Authorize(Roles = "Admin")]
-    [HttpPost]
-    public async Task<ActionResult<ApiResponse<ProductDto>>> CreateProduct([FromBody] CreateProductRequestDto request)
+    [HttpPut("items/{productId:int}")]
+    public async Task<IActionResult> UpdateItem(int productId, [FromBody] CartDeltaInput request, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(request.Title))
-        {
-            return BadRequest(new ApiResponse<ProductDto>(false, null, "Title is required."));
-        }
-
-        var product = new Product
-        {
-            Title = request.Title.Trim(),
-            Category = string.IsNullOrWhiteSpace(request.Category) ? "books" : request.Category.Trim().ToLowerInvariant(),
-            CategoryTitle = string.IsNullOrWhiteSpace(request.CategoryTitle) ? "کتب تدبر" : request.CategoryTitle.Trim(),
-            ShortDesc = request.ShortDesc,
-            FullDesc = request.FullDesc,
-            Price = request.Price,
-            OriginalPrice = request.OriginalPrice,
-            Badge = request.Badge,
-            ImageUrl = request.ImageUrl,
-            AuthorOrPublisher = request.AuthorOrPublisher,
-            Pages = request.Pages,
-            Rating = request.Rating,
-            Stock = request.Stock,
-            IsActive = request.IsActive,
-            UpdatedAt = DateTime.UtcNow
-        };
-
-        _context.Products.Add(product);
-        await _context.SaveChangesAsync();
-
-        return Ok(new ApiResponse<ProductDto>(true, new ProductDto(
-            product.Id,
-            product.Title,
-            product.Category,
-            product.CategoryTitle,
-            product.ShortDesc,
-            product.FullDesc,
-            product.Price,
-            product.OriginalPrice,
-            product.Badge,
-            product.ImageUrl,
-            product.AuthorOrPublisher,
-            product.Pages,
-            product.Rating,
-            product.Stock,
-            product.IsActive), "Product created successfully."));
+        if (!TryGetCartOwner(out var userId, out var guestId, out var error)) return error!;
+        var item = await CartQuery(userId, guestId).Include(x => x.Product).FirstOrDefaultAsync(x => x.ProductId == productId, ct);
+        if (item is null) return NotFound(Failure("CART_ITEM_NOT_FOUND", "Cart item not found."));
+        var next = item.Quantity + request.Delta;
+        if (next <= 0) _db.CartItems.Remove(item);
+        else if (item.Product is null || next > item.Product.Stock) return Conflict(Failure("OUT_OF_STOCK", "Requested quantity exceeds available stock."));
+        else { item.Quantity = next; item.UpdatedAt = DateTime.UtcNow; }
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { success = true, data = next <= 0 ? null : new { productId, quantity = next }, message = "Cart updated." });
     }
 
-    [Authorize(Roles = "Admin")]
-    [HttpPut("{id:int}")]
-    public async Task<ActionResult<ApiResponse<ProductDto>>> UpdateProduct(int id, [FromBody] CreateProductRequestDto request)
+    [HttpDelete("items/{productId:int}")]
+    public async Task<IActionResult> RemoveItem(int productId, CancellationToken ct)
     {
-        var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == id);
-        if (product is null)
-        {
-            return NotFound(new ApiResponse<ProductDto>(false, null, "Product not found."));
-        }
-
-        product.Title = request.Title.Trim();
-        product.Category = string.IsNullOrWhiteSpace(request.Category) ? product.Category : request.Category.Trim().ToLowerInvariant();
-        product.CategoryTitle = string.IsNullOrWhiteSpace(request.CategoryTitle) ? product.CategoryTitle : request.CategoryTitle.Trim();
-        product.ShortDesc = request.ShortDesc;
-        product.FullDesc = request.FullDesc;
-        product.Price = request.Price;
-        product.OriginalPrice = request.OriginalPrice;
-        product.Badge = request.Badge;
-        product.ImageUrl = request.ImageUrl;
-        product.AuthorOrPublisher = request.AuthorOrPublisher;
-        product.Pages = request.Pages;
-        product.Rating = request.Rating;
-        product.Stock = request.Stock;
-        product.IsActive = request.IsActive;
-        product.UpdatedAt = DateTime.UtcNow;
-
-        await _context.SaveChangesAsync();
-
-        return Ok(new ApiResponse<ProductDto>(true, new ProductDto(
-            product.Id,
-            product.Title,
-            product.Category,
-            product.CategoryTitle,
-            product.ShortDesc,
-            product.FullDesc,
-            product.Price,
-            product.OriginalPrice,
-            product.Badge,
-            product.ImageUrl,
-            product.AuthorOrPublisher,
-            product.Pages,
-            product.Rating,
-            product.Stock,
-            product.IsActive), "Product updated successfully."));
+        if (!TryGetCartOwner(out var userId, out var guestId, out var error)) return error!;
+        var item = await CartQuery(userId, guestId).FirstOrDefaultAsync(x => x.ProductId == productId, ct);
+        if (item is null) return NotFound(Failure("CART_ITEM_NOT_FOUND", "Cart item not found."));
+        _db.CartItems.Remove(item); await _db.SaveChangesAsync(ct);
+        return Ok(new { success = true, data = (object?)null, message = "Cart item removed." });
     }
 
-    [Authorize(Roles = "Admin")]
-    [HttpDelete("{id:int}")]
-    public async Task<ActionResult<ApiResponse<object>>> DeleteProduct(int id)
+    [HttpDelete]
+    public async Task<IActionResult> Clear(CancellationToken ct)
     {
-        var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == id);
-        if (product is null)
-        {
-            return NotFound(new ApiResponse<object>(false, null, "Product not found."));
-        }
-
-        _context.Products.Remove(product);
-        await _context.SaveChangesAsync();
-
-        return Ok(new ApiResponse<object>(true, null, "Product deleted successfully."));
+        if (!TryGetCartOwner(out var userId, out var guestId, out var error)) return error!;
+        var items = await CartQuery(userId, guestId).ToListAsync(ct);
+        _db.CartItems.RemoveRange(items); await _db.SaveChangesAsync(ct);
+        return Ok(new { success = true, data = (object?)null, message = "Cart cleared." });
     }
+
+    private IQueryable<CartItem> CartQuery(string? userId, string? guestId) => _db.CartItems.Include(x => x.Product)
+        .Where(x => userId != null ? x.UserId == userId : x.GuestSessionId == guestId);
+
+    private bool TryGetCartOwner(out string? userId, out string? guestId, out ObjectResult? error)
+    {
+        userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        guestId = null; error = null;
+        if (!string.IsNullOrWhiteSpace(userId)) return true;
+        guestId = Request.Headers["X-Session-ID"].FirstOrDefault()?.Trim();
+        if (string.IsNullOrWhiteSpace(guestId) || guestId.Length > 150)
+        { error = BadRequest(Failure("SESSION_REQUIRED", "Provide a valid X-Session-ID for guest cart access.")); return false; }
+        return true;
+    }
+
+    private static object Failure(string code, string message) => new { success = false, error = new { code, message, details = (object?)null } };
 }
+
+public sealed record CartItemInput(int ProductId, int Quantity);
+public sealed record CartDeltaInput(int Delta);

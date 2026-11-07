@@ -3,159 +3,60 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopApi.Data;
-using ShopApi.DTOs;
-using ShopApi.Models;
 
 namespace ShopApi.Controllers;
 
 [ApiController]
-[Route("api/v1/shop/[controller]")]
-[Authorize]
-public class OrdersController : ControllerBase
+[Route("api/v1/shop/payment")]
+public sealed class PaymentController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly AppDbContext _db;
+    private readonly IWebHostEnvironment _environment;
+    public PaymentController(AppDbContext db, IWebHostEnvironment environment) { _db = db; _environment = environment; }
 
-    public OrdersController(AppDbContext context)
-    {
-        _context = context;
-    }
-
-    [HttpGet]
-    public async Task<ActionResult<ApiResponse<IEnumerable<OrderDto>>>> GetOrders()
+    [Authorize]
+    [HttpPost("request")]
+    public async Task<IActionResult> RequestPayment([FromBody] PaymentRequest request, CancellationToken ct)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (userId is null)
-        {
-            return Unauthorized(new ApiResponse<IEnumerable<OrderDto>>(false, null, "Unauthorized."));
-        }
-
-        var orders = await _context.Orders
-            .Where(o => o.UserId == userId)
-            .Include(o => o.Items)
-            .OrderByDescending(o => o.CreatedAt)
-            .Select(o => new OrderDto(
-                o.Id,
-                o.TrackingNumber,
-                o.Status,
-                o.CreatedAt,
-                o.TotalPayable,
-                o.CustomerName,
-                o.CustomerPhone,
-                o.Items.Select(i => new OrderItemDto(i.Id, i.ProductId, i.ProductTitle, i.Quantity, i.UnitPrice, i.TotalPrice))))
-            .ToListAsync();
-
-        return Ok(new ApiResponse<IEnumerable<OrderDto>>(true, orders, "Orders retrieved successfully."));
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == request.OrderId && o.UserId == userId, ct);
+        if (order is null) return NotFound(Failure("ORDER_NOT_FOUND", "Order not found."));
+        if (order.Status != "pending_payment") return Conflict(Failure("INVALID_ORDER_STATUS", "Only pending orders can be paid."));
+        // This project currently has no bank credentials/provider adapter. Keep this explicit mock out of production.
+        if (!_environment.IsDevelopment()) return StatusCode(503, Failure("PAYMENT_NOT_CONFIGURED", "Configure a verified payment provider before enabling payments."));
+        var authority = Guid.NewGuid().ToString("N");
+        order.PaymentRefId = authority;
+        order.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { success = true, data = new { orderId = order.Id, authority,
+            paymentUrl = $"/api/v1/shop/payment/mock-gateway?Authority={authority}" }, message = "Development mock payment created." });
     }
 
-    [HttpPost]
-    public async Task<ActionResult<ApiResponse<object>>> CreateOrder([FromBody] CheckoutRequestDto request)
+    [AllowAnonymous]
+    [HttpGet("verify")]
+    public async Task<IActionResult> Verify([FromQuery] string? Authority, [FromQuery] string? Status, CancellationToken ct)
     {
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (userId is null)
+        if (!_environment.IsDevelopment()) return StatusCode(503, Failure("PAYMENT_NOT_CONFIGURED", "Payment verification requires a configured bank provider."));
+        if (string.IsNullOrWhiteSpace(Authority) || string.IsNullOrWhiteSpace(Status))
+            return BadRequest(Failure("INVALID_CALLBACK", "Authority and Status are required."));
+        var order = await _db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.PaymentRefId == Authority, ct);
+        if (order is null) return NotFound(Failure("PAYMENT_NOT_FOUND", "No payment matches this authority."));
+        if (order.Status != "pending_payment") return Conflict(Failure("PAYMENT_ALREADY_PROCESSED", "This payment has already been processed."));
+        if (Status.Equals("OK", StringComparison.OrdinalIgnoreCase)) order.Status = "paid";
+        else
         {
-            return Unauthorized(new ApiResponse<object>(false, null, "Unauthorized."));
+            order.Status = "cancelled";
+            var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
+            var products = await _db.Products.Where(p => productIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id, ct);
+            foreach (var item in order.Items) if (products.TryGetValue(item.ProductId, out var product)) product.Stock += item.Quantity;
         }
-
-        var cartItems = await _context.CartItems
-            .Include(ci => ci.Product)
-            .Where(ci => ci.UserId == userId)
-            .ToListAsync();
-
-        if (cartItems.Count == 0)
-        {
-            return BadRequest(new ApiResponse<object>(false, null, "Your cart is empty."));
-        }
-
-        foreach (var item in cartItems)
-        {
-            if (item.Product is null)
-            {
-                return BadRequest(new ApiResponse<object>(false, null, $"Product {item.ProductId} is no longer available."));
-            }
-
-            if (item.Quantity > item.Product.Stock)
-            {
-                return BadRequest(new ApiResponse<object>(false, null, $"Not enough stock available for {item.Product.Title}."));
-            }
-        }
-
-        var orderId = $"TB-{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid().ToString()[..6].ToUpper()}";
-        var trackingNumber = $"2048{DateTime.UtcNow:yyyyMMddHHmmss}";
-
-        var order = new Order
-        {
-            Id = orderId,
-            UserId = userId,
-            CustomerName = request.Customer.FullName,
-            CustomerPhone = request.Customer.Phone,
-            Province = request.Customer.Province,
-            City = request.Customer.City,
-            PostalAddress = request.Customer.PostalAddress,
-            PostalCode = request.Customer.PostalCode,
-            Notes = request.Customer.Notes,
-            PaymentMethod = request.PaymentMethod,
-            Status = "pending_payment",
-            TrackingNumber = trackingNumber,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
-
-        decimal itemsPrice = 0m;
-        foreach (var item in cartItems)
-        {
-            var unitPrice = item.Product!.Price;
-            var total = unitPrice * item.Quantity;
-            itemsPrice += total;
-
-            order.Items.Add(new OrderItem
-            {
-                OrderId = order.Id,
-                ProductId = item.ProductId,
-                ProductTitle = item.Product.Title,
-                Quantity = item.Quantity,
-                UnitPrice = unitPrice,
-                TotalPrice = total
-            });
-
-            item.Product.Stock -= item.Quantity;
-        }
-
-        var shippingFee = itemsPrice >= 400000m ? 0m : 35000m;
-        order.ItemsPrice = itemsPrice;
-        order.DiscountAmount = 0m;
-        order.ShippingFee = shippingFee;
-        order.TotalPayable = itemsPrice + shippingFee;
-
-        _context.Orders.Add(order);
-        _context.CartItems.RemoveRange(cartItems);
-        await _context.SaveChangesAsync();
-
-        return StatusCode(201, new ApiResponse<object>(true, new
-        {
-            orderId = order.Id,
-            trackingNumber = order.TrackingNumber,
-            totalPayable = order.TotalPayable,
-            status = order.Status,
-            paymentUrl = $"/api/v1/shop/payment/mock-gateway?orderId={order.Id}"
-        }, "Order created successfully."));
+        order.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { success = true, data = new { orderId = order.Id, status = order.Status,
+            paymentRefId = order.Status == "paid" ? $"MOCK-{Authority}" : null }, message = "Development mock payment processed." });
     }
 
-    [HttpGet("track/{trackingNumber}")]
-    public async Task<ActionResult<ApiResponse<object>>> TrackOrder(string trackingNumber)
-    {
-        var order = await _context.Orders.FirstOrDefaultAsync(o => o.TrackingNumber == trackingNumber);
-        if (order is null)
-        {
-            return NotFound(new ApiResponse<object>(false, null, "Order not found."));
-        }
-
-        return Ok(new ApiResponse<object>(true, new
-        {
-            trackingNumber = order.TrackingNumber,
-            status = order.Status,
-            province = order.Province,
-            city = order.City,
-            updatedAt = order.UpdatedAt
-        }, "Order status retrieved successfully."));
-    }
+    private static object Failure(string code, string message) => new { success = false, error = new { code, message, details = (object?)null } };
 }
+
+public sealed record PaymentRequest(string OrderId);
