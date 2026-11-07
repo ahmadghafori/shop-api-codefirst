@@ -22,45 +22,90 @@ public record CategoryDto(int Id, string Name, string? Description);
 
 public record ProductDto(
     int Id,
-    string Name,
-    string Slug,
-    string Description,
+    string Title,
+    string Category,
+    string CategoryTitle,
+    string ShortDesc,
+    string FullDesc,
     decimal Price,
-    int StockQuantity,
-    bool IsFeatured,
+    decimal OriginalPrice,
+    string? Badge,
     string ImageUrl,
-    int CategoryId,
-    string CategoryName);
+    string? AuthorOrPublisher,
+    int? Pages,
+    decimal Rating,
+    int Stock,
+    bool IsActive);
 
 public record CreateProductRequestDto(
-    string Name,
-    string Description,
+    string Title,
+    string Category,
+    string CategoryTitle,
+    string ShortDesc,
+    string FullDesc,
     decimal Price,
-    int StockQuantity,
-    bool IsFeatured,
+    decimal OriginalPrice,
+    string? Badge,
     string ImageUrl,
-    int CategoryId);
+    string? AuthorOrPublisher,
+    int? Pages,
+    decimal Rating,
+    int Stock,
+    bool IsActive = true);
 
 public record AddCartItemRequestDto(int ProductId, int Quantity);
 
+public record UpdateCartItemRequestDto(int Delta);
+
+public record ShippingCalculateRequestDto(string Province, string City, decimal CartAmount);
+
+public record ShippingCalculateResponseDto(
+    decimal ShippingFee,
+    bool IsFreeShipping,
+    decimal FreeShippingThreshold,
+    decimal RemainingForFreeShipping);
+
+public record CheckoutRequestDto(
+    CustomerInfo Customer,
+    string PaymentMethod);
+
+public record CustomerInfo(
+    string FullName,
+    string Phone,
+    string Province,
+    string City,
+    string PostalAddress,
+    string PostalCode,
+    string? Notes);
+
 public record CartItemDto(
-    int Id,
     int ProductId,
-    string ProductName,
-    decimal Price,
     int Quantity,
-    decimal Total);
+    ProductDto Product,
+    decimal UnitPrice,
+    decimal TotalPrice);
 
-public record CheckoutRequestDto(string ShippingAddress, string PhoneNumber);
+public record CartSummaryDto(
+    int ItemsCount,
+    decimal ItemsPrice,
+    decimal DiscountAmount,
+    decimal ShippingFee,
+    decimal TotalPayable);
 
-public record OrderItemDto(int Id, string ProductName, int Quantity, decimal Price);
+public record OrderItemDto(int Id, int ProductId, string ProductTitle, int Quantity, decimal UnitPrice, decimal TotalPrice);
 
 public record OrderDto(
-    int Id,
-    string OrderNumber,
+    string Id,
+    string? TrackingNumber,
     string Status,
-    DateTime OrderDate,
-    decimal Total,
-    string ShippingAddress,
-    string PhoneNumber,
+    DateTime CreatedAt,
+    decimal TotalPayable,
+    string CustomerName,
+    string CustomerPhone,
     IEnumerable<OrderItemDto> Items);
+
+public record PaymentRequestDto(string OrderId);
+
+public record PaymentVerifyQueryDto(string Authority, string Status);
+
+public record ApiResponse<T>(bool Success, T? Data, string Message, object? Meta = null);

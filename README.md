@@ -1,75 +1,44 @@
 # Shop API - Code First
 
-This repository contains a complete ASP.NET Core Web API for an e-commerce store built using:
+این پروژه یک API فروشگاه برای محصولات فرهنگی و کتب تدبر است که بر اساس مستند فنی شما طراحی شده است.
+
+## ویژگی‌ها
 
 - ASP.NET Core 8 Web API
 - EF Core Code First
-- SQL Server
+- SQL Server / LocalDB
 - ASP.NET Core Identity
 - JWT Authentication
-- Swagger / OpenAPI
-- Role-based authorization
+- Swagger
+- فروشگاه محصولات فرهنگی، قرآن و کتب تدبر
+- سبد خرید برای کاربر و مهمان
+- ثبت سفارش و محاسبه هزینه ارسال
+- درگاه پرداخت mock
 
-## Features
+## مسیرهای اصلی
 
-- Product catalog
-- Categories
-- Customer cart
-- Orders and order details
-- Admin APIs
-- JWT login and registration
-- Seed data for admin and sample products
+- `/api/v1/shop/products`
+- `/api/v1/shop/categories`
+- `/api/v1/shop/cart`
+- `/api/v1/shop/orders`
+- `/api/v1/shop/payment`
+- `/api/v1/shop/shipping`
+- `/api/v1/shop/auth`
 
-## Project structure
-
-- `ShopApi/` – main API project
-- `ShopApi/Controllers/` – API endpoints
-- `ShopApi/Data/` – EF Core DbContext
-- `ShopApi/Models/` – entities
-- `ShopApi/Services/` – JWT token generation and seed logic
-
-## Setup
-
-1. Edit the connection string in `ShopApi/appsettings.json`.
-2. Restore packages:
+## اجرای پروژه
 
 ```bash
 dotnet restore
-```
-
-3. Build the project:
-
-```bash
 dotnet build
+dotnet ef database update
+dotnet run
 ```
 
-4. Run the project:
-
-```bash
-dotnet run --project ShopApi
-```
-
-5. Open Swagger in the browser:
-
-```text
-https://localhost:5001/swagger
-```
-
-## Default admin account
+## حساب مدیر پیش‌فرض
 
 - Email: `admin@shopapi.com`
 - Password: `Admin@123`
 
-## Notes
+## نکته
 
-This project uses the Code First approach. After cloning, you can generate migrations with:
-
-```bash
-dotnet ef migrations add InitialCreate --project ShopApi --startup-project ShopApi
-```
-
-Then update the database:
-
-```bash
-dotnet ef database update --project ShopApi --startup-project ShopApi
-```
+این نسخه با مستند فنی فروشگاه محصولات فرهنگی و کتب تدبر هم‌راستا شده است و از الگوی `/api/v1/shop` پیروی می‌کند.

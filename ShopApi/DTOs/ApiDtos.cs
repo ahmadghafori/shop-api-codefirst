@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using ShopApi.Data;
 using ShopApi.Models;
 
@@ -12,8 +13,9 @@ public static class SeedData
         var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
         var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
 
-        string[] roles = ["Admin", "Customer"];
+        await context.Database.MigrateAsync();
 
+        var roles = new[] { "Admin", "Customer" };
         foreach (var role in roles)
         {
             if (!await roleManager.RoleExistsAsync(role))
@@ -23,11 +25,10 @@ public static class SeedData
         }
 
         var adminEmail = "admin@shopapi.com";
-        var adminUser = await userManager.FindByEmailAsync(adminEmail);
-
-        if (adminUser == null)
+        var admin = await userManager.FindByEmailAsync(adminEmail);
+        if (admin is null)
         {
-            adminUser = new ApplicationUser
+            admin = new ApplicationUser
             {
                 UserName = adminEmail,
                 Email = adminEmail,
@@ -36,103 +37,109 @@ public static class SeedData
                 EmailConfirmed = true
             };
 
-            var result = await userManager.CreateAsync(adminUser, "Admin@123");
+            var result = await userManager.CreateAsync(admin, "Admin@123");
             if (result.Succeeded)
             {
-                await userManager.AddToRoleAsync(adminUser, "Admin");
+                await userManager.AddToRoleAsync(admin, "Admin");
             }
         }
-        else if (!await userManager.IsInRoleAsync(adminUser, "Admin"))
+        else if (!await userManager.IsInRoleAsync(admin, "Admin"))
         {
-            await userManager.AddToRoleAsync(adminUser, "Admin");
+            await userManager.AddToRoleAsync(admin, "Admin");
         }
 
-        if (!context.Categories.Any())
+        if (!await context.Products.AnyAsync())
         {
-            context.Categories.AddRange(
-                new Category { Name = "Electronics", Description = "Electronic gadgets and accessories" },
-                new Category { Name = "Fashion", Description = "Clothing and personal accessories" },
-                new Category { Name = "Home", Description = "Home and living essentials" },
-                new Category { Name = "Sports", Description = "Sports and outdoor products" }
-            );
-        }
-
-        if (!context.Products.Any())
-        {
-            var categories = context.Categories.ToList();
-            var electronics = categories.First(c => c.Name == "Electronics");
-            var fashion = categories.First(c => c.Name == "Fashion");
-            var home = categories.First(c => c.Name == "Home");
-            var sports = categories.First(c => c.Name == "Sports");
-
-            context.Products.AddRange(
+            var products = new[]
+            {
                 new Product
                 {
-                    Name = "Wireless Headphones",
-                    Slug = "wireless-headphones",
-                    Description = "High quality noise cancelling wireless headphones.",
-                    Price = 199.99m,
-                    StockQuantity = 40,
-                    IsFeatured = true,
-                    ImageUrl = "https://images.unsplash.com/photo-1546435770-a3e426bf472b",
-                    CategoryId = electronics.Id
+                    Title = "مجموعه ۳ جلدی تدبر در قرآن کریم",
+                    Category = "books",
+                    CategoryTitle = "کتب تدبر",
+                    ShortDesc = "دوره جامع آموزش روش‌ها و مقدمات تدبر مفهومی و ساختاری در آیات قرآن کریم.",
+                    FullDesc = "این دوره مرجع شامل سه جلد آموزشی و کارگاهی است که با زبانی شیوا قواعد فهم ساختارمند قرآن را آموزش می‌دهد.",
+                    Price = 360000m,
+                    OriginalPrice = 450000m,
+                    Badge = "پرفروش‌ترین",
+                    ImageUrl = "/assets/shop/book_tadabor_set.svg",
+                    AuthorOrPublisher = "انتشارات بینش وحیانی",
+                    Pages = 640,
+                    Rating = 4.9m,
+                    Stock = 42,
+                    IsActive = true
                 },
                 new Product
                 {
-                    Name = "Smart Watch",
-                    Slug = "smart-watch",
-                    Description = "Track your fitness and get notifications on the go.",
-                    Price = 249.99m,
-                    StockQuantity = 30,
-                    IsFeatured = true,
-                    ImageUrl = "https://images.unsplash.com/photo-1523275335684-37898b6baf30",
-                    CategoryId = electronics.Id
+                    Title = "تدبر در آیات محبت",
+                    Category = "books",
+                    CategoryTitle = "کتب تدبر",
+                    ShortDesc = "بررسی عمیق مفاهیم محبت و ارتباط آن با زندگی معنوی.",
+                    FullDesc = "کتاب تدبر در آیات محبت به صورت کاربردی، با رویکردی تفسیری و تربیتی ریشه‌های عشق، مهربانی و تعامل انسانی را بررسی می‌کند.",
+                    Price = 180000m,
+                    OriginalPrice = 220000m,
+                    Badge = "جدید",
+                    ImageUrl = "/assets/shop/book_love_quran.svg",
+                    AuthorOrPublisher = "مؤسسه معنویت و فرهنگ",
+                    Pages = 220,
+                    Rating = 4.8m,
+                    Stock = 28,
+                    IsActive = true
                 },
                 new Product
                 {
-                    Name = "Classic Cotton T-Shirt",
-                    Slug = "classic-cotton-t-shirt",
-                    Description = "Lightweight and comfortable everyday shirt.",
-                    Price = 29.99m,
-                    StockQuantity = 80,
-                    IsFeatured = true,
-                    ImageUrl = "https://images.unsplash.com/photo-1521572267360-ee0c2909d518",
-                    CategoryId = fashion.Id
+                    Title = "قرآن کریم با ترجمه روان",
+                    Category = "quran",
+                    CategoryTitle = "قرآن کریم",
+                    ShortDesc = "نسخه ماندگار از قرآن کریم با ترجمه روان و خوانا.",
+                    FullDesc = "این نسخه برای مطالعه‌ی روزمره و تفکر عمیق در آیات، با ترجمه روان و خوش‌خوان، مناسب خانواده و جوانان است.",
+                    Price = 290000m,
+                    OriginalPrice = 360000m,
+                    Badge = "ارسال رایگان",
+                    ImageUrl = "/assets/shop/quran_ravan.svg",
+                    AuthorOrPublisher = "انتشارات نور الهی",
+                    Pages = 720,
+                    Rating = 4.9m,
+                    Stock = 51,
+                    IsActive = true
                 },
                 new Product
                 {
-                    Name = "Leather Wallet",
-                    Slug = "leather-wallet",
-                    Description = "Premium quality wallet with enough space for cards and cash.",
-                    Price = 59.99m,
-                    StockQuantity = 55,
-                    IsFeatured = false,
-                    ImageUrl = "https://images.unsplash.com/photo-1627123424574-724758594e93",
-                    CategoryId = fashion.Id
+                    Title = "کارت هدیه معنوی",
+                    Category = "cards",
+                    CategoryTitle = "کارت هدیه",
+                    ShortDesc = "کارت هدیه برای مراسم و هدیه‌های معنوی و فرهنگی.",
+                    FullDesc = "کارت هدیه مناسب برای دعوت‌های مذهبی، هدیه به دوستان و اعضای خانواده و مناسبت‌های خاص.",
+                    Price = 120000m,
+                    OriginalPrice = 150000m,
+                    Badge = "پیشنهاد ویژه",
+                    ImageUrl = "/assets/shop/gift_card.svg",
+                    AuthorOrPublisher = "تدبر لايف",
+                    Pages = null,
+                    Rating = 4.7m,
+                    Stock = 91,
+                    IsActive = true
                 },
                 new Product
                 {
-                    Name = "Ceramic Coffee Mug",
-                    Slug = "ceramic-coffee-mug",
-                    Description = "Modern mug for your coffee and tea moments.",
-                    Price = 18.50m,
-                    StockQuantity = 100,
-                    IsFeatured = false,
-                    ImageUrl = "https://images.unsplash.com/photo-1514228742587-6b1558fcca3d",
-                    CategoryId = home.Id
-                },
-                new Product
-                {
-                    Name = "Yoga Mat",
-                    Slug = "yoga-mat",
-                    Description = "Soft and durable mat for workouts and stretching.",
-                    Price = 42.00m,
-                    StockQuantity = 65,
-                    IsFeatured = true,
-                    ImageUrl = "https://images.unsplash.com/photo-1517836357463-d25dfeac3438",
-                    CategoryId = sports.Id
+                    Title = "پکیج فرهنگی خانواده",
+                    Category = "cultural",
+                    CategoryTitle = "محصولات فرهنگی",
+                    ShortDesc = "مجموعه‌ای از ابزارها و محتوای فرهنگی برای رشد خانواده.",
+                    FullDesc = "این بسته با هدف تقویت خانواده و فرهنگ زندگی معنوی طراحی شده و شامل ابزارهای آموزشی و فرهنگی برای همسران و فرزندان است.",
+                    Price = 420000m,
+                    OriginalPrice = 520000m,
+                    Badge = "پک خانواده",
+                    ImageUrl = "/assets/shop/family_cultural_pack.svg",
+                    AuthorOrPublisher = "دفتر فرهنگی تدبر",
+                    Pages = 340,
+                    Rating = 4.8m,
+                    Stock = 15,
+                    IsActive = true
                 }
-            );
+            };
+
+            await context.Products.AddRangeAsync(products);
         }
 
         await context.SaveChangesAsync();

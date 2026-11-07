@@ -8,7 +8,7 @@ using ShopApi.Models;
 namespace ShopApi.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/v1/shop/[controller]")]
 public class ProductsController : ControllerBase
 {
     private readonly AppDbContext _context;
@@ -19,141 +19,199 @@ public class ProductsController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<ProductDto>>> GetProducts()
+    public async Task<ActionResult<ApiResponse<IEnumerable<ProductDto>>>> GetProducts(
+        [FromQuery] string? category,
+        [FromQuery] string? search,
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 20)
     {
-        var products = await _context.Products
-            .Include(p => p.Category)
-            .OrderByDescending(p => p.IsFeatured)
-            .ThenBy(p => p.Name)
+        if (page < 1) page = 1;
+        if (limit < 1) limit = 20;
+
+        var query = _context.Products.AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(category) && category != "all")
+        {
+            query = query.Where(p => p.Category == category);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var normalized = search.Trim();
+            query = query.Where(p =>
+                p.Title.Contains(normalized) ||
+                p.CategoryTitle.Contains(normalized) ||
+                p.ShortDesc.Contains(normalized) ||
+                p.AuthorOrPublisher != null && p.AuthorOrPublisher.Contains(normalized));
+        }
+
+        var total = await query.CountAsync();
+
+        var items = await query
+            .OrderByDescending(p => p.IsActive)
+            .ThenByDescending(p => p.Rating)
+            .Skip((page - 1) * limit)
+            .Take(limit)
             .Select(p => new ProductDto(
                 p.Id,
-                p.Name,
-                p.Slug,
-                p.Description,
+                p.Title,
+                p.Category,
+                p.CategoryTitle,
+                p.ShortDesc,
+                p.FullDesc,
                 p.Price,
-                p.StockQuantity,
-                p.IsFeatured,
+                p.OriginalPrice,
+                p.Badge,
                 p.ImageUrl,
-                p.CategoryId,
-                p.Category != null ? p.Category.Name : string.Empty))
+                p.AuthorOrPublisher,
+                p.Pages,
+                p.Rating,
+                p.Stock,
+                p.IsActive))
             .ToListAsync();
 
-        return Ok(products);
+        return Ok(new ApiResponse<IEnumerable<ProductDto>>(
+            true,
+            items,
+            "Products retrieved successfully.",
+            new { total, page, limit }));
     }
 
     [HttpGet("{id:int}")]
-    public async Task<ActionResult<ProductDto>> GetProductById(int id)
+    public async Task<ActionResult<ApiResponse<ProductDto>>> GetProductById(int id)
     {
-        var product = await _context.Products
-            .Include(p => p.Category)
-            .FirstOrDefaultAsync(p => p.Id == id);
-
+        var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == id);
         if (product is null)
         {
-            return NotFound();
+            return NotFound(new ApiResponse<ProductDto>(false, null, "Product not found."));
         }
 
-        return Ok(new ProductDto(
+        return Ok(new ApiResponse<ProductDto>(true, new ProductDto(
             product.Id,
-            product.Name,
-            product.Slug,
-            product.Description,
+            product.Title,
+            product.Category,
+            product.CategoryTitle,
+            product.ShortDesc,
+            product.FullDesc,
             product.Price,
-            product.StockQuantity,
-            product.IsFeatured,
+            product.OriginalPrice,
+            product.Badge,
             product.ImageUrl,
-            product.CategoryId,
-            product.Category?.Name ?? string.Empty));
+            product.AuthorOrPublisher,
+            product.Pages,
+            product.Rating,
+            product.Stock,
+            product.IsActive), "Product retrieved successfully."));
     }
 
     [Authorize(Roles = "Admin")]
     [HttpPost]
-    public async Task<ActionResult<ProductDto>> CreateProduct([FromBody] CreateProductRequestDto request)
+    public async Task<ActionResult<ApiResponse<ProductDto>>> CreateProduct([FromBody] CreateProductRequestDto request)
     {
-        if (string.IsNullOrWhiteSpace(request.Name))
+        if (string.IsNullOrWhiteSpace(request.Title))
         {
-            return BadRequest("Product name is required.");
+            return BadRequest(new ApiResponse<ProductDto>(false, null, "Title is required."));
         }
-
-        var categoryExists = await _context.Categories.AnyAsync(c => c.Id == request.CategoryId);
-        if (!categoryExists)
-        {
-            return BadRequest("Category not found.");
-        }
-
-        var slug = string.IsNullOrWhiteSpace(request.Name)
-            ? Guid.NewGuid().ToString()[..8]
-            : request.Name.Trim();
 
         var product = new Product
         {
-            Name = request.Name.Trim(),
-            Slug = slug.ToLower().Replace(" ", "-"),
-            Description = request.Description,
+            Title = request.Title.Trim(),
+            Category = string.IsNullOrWhiteSpace(request.Category) ? "books" : request.Category.Trim().ToLowerInvariant(),
+            CategoryTitle = string.IsNullOrWhiteSpace(request.CategoryTitle) ? "کتب تدبر" : request.CategoryTitle.Trim(),
+            ShortDesc = request.ShortDesc,
+            FullDesc = request.FullDesc,
             Price = request.Price,
-            StockQuantity = request.StockQuantity,
-            IsFeatured = request.IsFeatured,
+            OriginalPrice = request.OriginalPrice,
+            Badge = request.Badge,
             ImageUrl = request.ImageUrl,
-            CategoryId = request.CategoryId
+            AuthorOrPublisher = request.AuthorOrPublisher,
+            Pages = request.Pages,
+            Rating = request.Rating,
+            Stock = request.Stock,
+            IsActive = request.IsActive,
+            UpdatedAt = DateTime.UtcNow
         };
 
         _context.Products.Add(product);
         await _context.SaveChangesAsync();
 
-        return Ok(new ProductDto(
+        return Ok(new ApiResponse<ProductDto>(true, new ProductDto(
             product.Id,
-            product.Name,
-            product.Slug,
-            product.Description,
+            product.Title,
+            product.Category,
+            product.CategoryTitle,
+            product.ShortDesc,
+            product.FullDesc,
             product.Price,
-            product.StockQuantity,
-            product.IsFeatured,
+            product.OriginalPrice,
+            product.Badge,
             product.ImageUrl,
-            product.CategoryId,
-            (await _context.Categories.FindAsync(product.CategoryId))?.Name ?? string.Empty));
+            product.AuthorOrPublisher,
+            product.Pages,
+            product.Rating,
+            product.Stock,
+            product.IsActive), "Product created successfully."));
     }
 
     [Authorize(Roles = "Admin")]
     [HttpPut("{id:int}")]
-    public async Task<IActionResult> UpdateProduct(int id, [FromBody] CreateProductRequestDto request)
+    public async Task<ActionResult<ApiResponse<ProductDto>>> UpdateProduct(int id, [FromBody] CreateProductRequestDto request)
     {
-        var product = await _context.Products.FindAsync(id);
+        var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == id);
         if (product is null)
         {
-            return NotFound();
+            return NotFound(new ApiResponse<ProductDto>(false, null, "Product not found."));
         }
 
-        var categoryExists = await _context.Categories.AnyAsync(c => c.Id == request.CategoryId);
-        if (!categoryExists)
-        {
-            return BadRequest("Category not found.");
-        }
-
-        product.Name = request.Name;
-        product.Description = request.Description;
+        product.Title = request.Title.Trim();
+        product.Category = string.IsNullOrWhiteSpace(request.Category) ? product.Category : request.Category.Trim().ToLowerInvariant();
+        product.CategoryTitle = string.IsNullOrWhiteSpace(request.CategoryTitle) ? product.CategoryTitle : request.CategoryTitle.Trim();
+        product.ShortDesc = request.ShortDesc;
+        product.FullDesc = request.FullDesc;
         product.Price = request.Price;
-        product.StockQuantity = request.StockQuantity;
-        product.IsFeatured = request.IsFeatured;
+        product.OriginalPrice = request.OriginalPrice;
+        product.Badge = request.Badge;
         product.ImageUrl = request.ImageUrl;
-        product.CategoryId = request.CategoryId;
-        product.Slug = request.Name.Trim().ToLower().Replace(" ", "-");
+        product.AuthorOrPublisher = request.AuthorOrPublisher;
+        product.Pages = request.Pages;
+        product.Rating = request.Rating;
+        product.Stock = request.Stock;
+        product.IsActive = request.IsActive;
+        product.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
-        return NoContent();
+
+        return Ok(new ApiResponse<ProductDto>(true, new ProductDto(
+            product.Id,
+            product.Title,
+            product.Category,
+            product.CategoryTitle,
+            product.ShortDesc,
+            product.FullDesc,
+            product.Price,
+            product.OriginalPrice,
+            product.Badge,
+            product.ImageUrl,
+            product.AuthorOrPublisher,
+            product.Pages,
+            product.Rating,
+            product.Stock,
+            product.IsActive), "Product updated successfully."));
     }
 
     [Authorize(Roles = "Admin")]
     [HttpDelete("{id:int}")]
-    public async Task<IActionResult> DeleteProduct(int id)
+    public async Task<ActionResult<ApiResponse<object>>> DeleteProduct(int id)
     {
-        var product = await _context.Products.FindAsync(id);
+        var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == id);
         if (product is null)
         {
-            return NotFound();
+            return NotFound(new ApiResponse<object>(false, null, "Product not found."));
         }
 
         _context.Products.Remove(product);
         await _context.SaveChangesAsync();
-        return NoContent();
+
+        return Ok(new ApiResponse<object>(true, null, "Product deleted successfully."));
     }
 }

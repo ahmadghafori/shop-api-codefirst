@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopApi.Data;
@@ -7,7 +6,7 @@ using ShopApi.DTOs;
 namespace ShopApi.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/v1/shop/[controller]")]
 public class CategoriesController : ControllerBase
 {
     private readonly AppDbContext _context;
@@ -18,34 +17,26 @@ public class CategoriesController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<CategoryDto>>> GetCategories()
+    public async Task<ActionResult<ApiResponse<IEnumerable<CategoryDto>>>> GetCategories()
     {
-        var categories = await _context.Categories
-            .OrderBy(c => c.Name)
-            .Select(c => new CategoryDto(c.Id, c.Name, c.Description))
+        var categories = await _context.Products
+            .Select(p => new { p.Category, p.CategoryTitle })
+            .Distinct()
+            .OrderBy(x => x.Category)
+            .Select(x => new CategoryDto(0, x.CategoryTitle, x.Category))
             .ToListAsync();
 
-        return Ok(categories);
-    }
-
-    [Authorize(Roles = "Admin")]
-    [HttpPost]
-    public async Task<ActionResult<CategoryDto>> CreateCategory([FromBody] CategoryDto request)
-    {
-        if (string.IsNullOrWhiteSpace(request.Name))
+        if (categories.Count == 0)
         {
-            return BadRequest("Category name is required.");
+            categories = new List<CategoryDto>
+            {
+                new(1, "کتب تدبر", "books"),
+                new(2, "قرآن ک��یم", "quran"),
+                new(3, "محصولات فرهنگی", "cultural"),
+                new(4, "کارت هدیه", "cards")
+            };
         }
 
-        var category = new ShopApi.Models.Category
-        {
-            Name = request.Name.Trim(),
-            Description = request.Description
-        };
-
-        _context.Categories.Add(category);
-        await _context.SaveChangesAsync();
-
-        return Ok(new CategoryDto(category.Id, category.Name, category.Description));
+        return Ok(new ApiResponse<IEnumerable<CategoryDto>>(true, categories, "Categories loaded successfully."));
     }
 }
