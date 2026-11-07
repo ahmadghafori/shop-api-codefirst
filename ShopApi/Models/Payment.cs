@@ -1,6 +1,6 @@
 namespace ShopApi.Models;
 
-public sealed class Payment
+public class Payment
 {
     public int Id { get; set; }
     public string OrderId { get; set; } = string.Empty;
