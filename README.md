@@ -1,44 +1,30 @@
 # Shop API - Code First
 
-این پروژه یک API فروشگاه برای محصولات فرهنگی و کتب تدبر است که بر اساس مستند فنی شما طراحی شده است.
+ASP.NET Core 8 e-commerce API for cultural products, Quran and Tadabor books.
 
-## ویژگی‌ها
+## Current API surface
 
-- ASP.NET Core 8 Web API
-- EF Core Code First
-- SQL Server / LocalDB
-- ASP.NET Core Identity
-- JWT Authentication
-- Swagger
-- فروشگاه محصولات فرهنگی، قرآن و کتب تدبر
-- سبد خرید برای کاربر و مهمان
-- ثبت سفارش و محاسبه هزینه ارسال
-- درگاه پرداخت mock
+- Public catalog: `GET /api/v1/shop/products`, `GET /api/v1/shop/products/{id}`, `GET /api/v1/shop/categories`
+- Guest/member cart: `/api/v1/shop/cart` (guests must send `X-Session-ID`)
+- Shipping calculation: `POST /api/v1/shop/shipping/calculate`
+- Authenticated checkout and order history: `/api/v1/shop/orders`
+- Customer address book: `GET|POST /api/v1/shop/addresses`, `PUT|DELETE /api/v1/shop/addresses/{id}`, `PUT /api/v1/shop/addresses/{id}/default`
+- Invoice data: `GET /api/v1/shop/orders/{orderId}/invoice`
+- Cancellation/refund requests: `POST /api/v1/shop/orders/{orderId}/cancel` and `/refund-requests`
+- Admin shipment/status updates: `PUT /api/v1/shop/orders/{orderId}/shipment` and `/status`
+- Payment request/verification: `/api/v1/shop/payment`
 
-## مسیرهای اصلی
+## Payment, shipping and database configuration
 
-- `/api/v1/shop/products`
-- `/api/v1/shop/categories`
-- `/api/v1/shop/cart`
-- `/api/v1/shop/orders`
-- `/api/v1/shop/payment`
-- `/api/v1/shop/shipping`
-- `/api/v1/shop/auth`
+Payment requests are deliberately disabled outside Development until a real bank provider and credentials are configured. Do not treat callback query parameters as proof of payment. The included development mock is for local testing only. Carrier tracking only stores/displays the carrier code; live status requires a configured postal carrier API. Refund requests are queued for administrative review and are not an automatic bank refund.
 
-## اجرای پروژه
+The database schema has changed (customer addresses, payment records, coupons, refund requests, and coupon code on orders). Create and commit an EF Core migration before deploying/updating an existing database:
 
 ```bash
 dotnet restore
 dotnet build
-dotnet ef database update
-dotnet run
+dotnet ef migrations add CompleteShopFeatures --project ShopApi
+dotnet ef database update --project ShopApi
 ```
 
-## حساب مدیر پیش‌فرض
-
-- Email: `admin@shopapi.com`
-- Password: `Admin@123`
-
-## نکته
-
-این نسخه با مستند فنی فروشگاه محصولات فرهنگی و کتب تدبر هم‌راستا شده است و از الگوی `/api/v1/shop` پیروی می‌کند.
+Configure production secrets using environment variables or a secret store; never commit real JWT or payment credentials. Run with `dotnet run --project ShopApi`.

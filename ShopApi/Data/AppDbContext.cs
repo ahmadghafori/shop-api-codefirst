@@ -4,76 +4,69 @@ using ShopApi.Models;
 
 namespace ShopApi.Data;
 
-public class AppDbContext : IdentityDbContext<ApplicationUser>
+public sealed class AppDbContext : IdentityDbContext<ApplicationUser>
 {
-    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
-    {
-    }
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
-    public DbSet<Category> Categories { get; set; }
-    public DbSet<Product> Products { get; set; }
-    public DbSet<CartItem> CartItems { get; set; }
-    public DbSet<Order> Orders { get; set; }
-    public DbSet<OrderItem> OrderItems { get; set; }
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<CartItem> CartItems => Set<CartItem>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+    public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<CustomerAddress> CustomerAddresses => Set<CustomerAddress>();
+    public DbSet<ShopCoupon> ShopCoupons => Set<ShopCoupon>();
+    public DbSet<RefundRequest> RefundRequests => Set<RefundRequest>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-
-        modelBuilder.Entity<Category>()
-            .HasIndex(c => c.Name)
-            .IsUnique();
-
-        modelBuilder.Entity<Product>()
-            .HasOne(p => p.Category)
-            .WithMany(c => c.Products)
-            .HasForeignKey(p => p.CategoryId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        modelBuilder.Entity<Product>()
-            .Property(p => p.Price)
-            .HasColumnType("decimal(18,2)");
-
-        modelBuilder.Entity<CartItem>()
-            .HasOne(ci => ci.Product)
-            .WithMany(p => p.CartItems)
-            .HasForeignKey(ci => ci.ProductId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        modelBuilder.Entity<CartItem>()
-            .HasOne(ci => ci.User)
-            .WithMany(u => u.CartItems)
-            .HasForeignKey(ci => ci.UserId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        modelBuilder.Entity<CartItem>()
-            .HasIndex(ci => new { ci.UserId, ci.ProductId })
-            .IsUnique();
-
-        modelBuilder.Entity<Order>()
-            .HasOne(o => o.User)
-            .WithMany(u => u.Orders)
-            .HasForeignKey(o => o.UserId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        modelBuilder.Entity<Order>()
-            .Property(o => o.Total)
-            .HasColumnType("decimal(18,2)");
-
-        modelBuilder.Entity<OrderItem>()
-            .HasOne(oi => oi.Order)
-            .WithMany(o => o.Items)
-            .HasForeignKey(oi => oi.OrderId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        modelBuilder.Entity<OrderItem>()
-            .HasOne(oi => oi.Product)
-            .WithMany(p => p.OrderItems)
-            .HasForeignKey(oi => oi.ProductId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        modelBuilder.Entity<OrderItem>()
-            .Property(oi => oi.Price)
-            .HasColumnType("decimal(18,2)");
+        modelBuilder.Entity<Category>().HasIndex(c => c.Name).IsUnique();
+        modelBuilder.Entity<Product>(e => {
+            e.Property(p => p.Price).HasColumnType("decimal(18,2)");
+            e.Property(p => p.OriginalPrice).HasColumnType("decimal(18,2)");
+            e.Property(p => p.Rating).HasColumnType("decimal(3,1)");
+            e.Property(p => p.ImageUrl).HasMaxLength(500);
+            e.Property(p => p.Category).HasMaxLength(50);
+            e.HasIndex(p => p.Category);
+        });
+        modelBuilder.Entity<CartItem>(e => {
+            e.HasOne(x => x.Product).WithMany(x => x.CartItems).HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.User).WithMany(x => x.CartItems).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.UserId, x.GuestSessionId, x.ProductId }).IsUnique();
+        });
+        modelBuilder.Entity<Order>(e => {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ItemsPrice).HasColumnType("decimal(18,2)");
+            e.Property(x => x.DiscountAmount).HasColumnType("decimal(18,2)");
+            e.Property(x => x.ShippingFee).HasColumnType("decimal(18,2)");
+            e.Property(x => x.TotalPayable).HasColumnType("decimal(18,2)");
+            e.Property(x => x.CouponCode).HasMaxLength(50);
+            e.HasOne(x => x.User).WithMany(x => x.Orders).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<OrderItem>(e => {
+            e.Property(x => x.UnitPrice).HasColumnType("decimal(18,2)");
+            e.Property(x => x.TotalPrice).HasColumnType("decimal(18,2)");
+            e.HasOne(x => x.Order).WithMany(x => x.Items).HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Product).WithMany(x => x.OrderItems).HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<Payment>(e => {
+            e.Property(x => x.Amount).HasColumnType("decimal(18,2)");
+            e.HasIndex(x => x.Authority).IsUnique();
+            e.HasOne(x => x.Order).WithMany(x => x.Payments).HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<CustomerAddress>(e => {
+            e.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.UserId, x.IsDefault });
+        });
+        modelBuilder.Entity<ShopCoupon>(e => {
+            e.HasIndex(x => x.Code).IsUnique();
+            e.Property(x => x.DiscountValue).HasColumnType("decimal(18,2)");
+            e.Property(x => x.MinimumOrderAmount).HasColumnType("decimal(18,2)");
+        });
+        modelBuilder.Entity<RefundRequest>(e => {
+            e.HasOne(x => x.Order).WithMany().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.OrderId, x.UserId });
+        });
     }
 }
