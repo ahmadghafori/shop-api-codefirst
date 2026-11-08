@@ -55,16 +55,36 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    var migrations = db.Database.GetMigrations();
+    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseStartup");
+    var migrations = db.Database.GetMigrations().ToArray();
 
-    if (migrations.Any())
+    logger.LogInformation(
+        "Initializing ShopApi database {Database} on {DataSource}. Found {MigrationCount} EF migrations.",
+        db.Database.GetDbConnection().Database,
+        db.Database.GetDbConnection().DataSource,
+        migrations.Length);
+
+    if (migrations.Length > 0)
     {
         await db.Database.MigrateAsync();
     }
     else
     {
-        // No migration has been added yet; create the schema from the current EF model.
+        // This creates the EF schema for a new/empty database when no migrations exist.
         await db.Database.EnsureCreatedAsync();
+    }
+
+    var rolesTableExists = await db.Database
+        .SqlQueryRaw<int>("SELECT CASE WHEN OBJECT_ID(N'dbo.AspNetRoles', N'U') IS NULL THEN 0 ELSE 1 END AS [Value]")
+        .SingleAsync();
+
+    if (rolesTableExists == 0)
+    {
+        throw new InvalidOperationException(
+            $"Database initialization did not create dbo.AspNetRoles. Connected database: " +
+            $"'{db.Database.GetDbConnection().Database}' on '{db.Database.GetDbConnection().DataSource}'. " +
+            "Check the active ConnectionStrings:DefaultConnection and add/apply an EF Core initial migration. " +
+            "EnsureCreated cannot repair an existing database that already contains other tables.");
     }
 
     await SeedData.InitializeAsync(scope.ServiceProvider);

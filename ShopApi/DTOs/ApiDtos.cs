@@ -13,14 +13,17 @@ public static class SeedData
         var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
         var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
 
-        await context.Database.MigrateAsync();
-
         var roles = new[] { "Admin", "Customer" };
         foreach (var role in roles)
         {
             if (!await roleManager.RoleExistsAsync(role))
             {
-                await roleManager.CreateAsync(new IdentityRole(role));
+                var roleResult = await roleManager.CreateAsync(new IdentityRole(role));
+                if (!roleResult.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to create role '{role}': {string.Join("; ", roleResult.Errors.Select(error => error.Description))}");
+                }
             }
         }
 
@@ -38,14 +41,21 @@ public static class SeedData
             };
 
             var result = await userManager.CreateAsync(admin, "Admin@123");
-            if (result.Succeeded)
+            if (!result.Succeeded)
             {
-                await userManager.AddToRoleAsync(admin, "Admin");
+                throw new InvalidOperationException(
+                    $"Failed to create the seed admin user: {string.Join("; ", result.Errors.Select(error => error.Description))}");
             }
         }
-        else if (!await userManager.IsInRoleAsync(admin, "Admin"))
+
+        if (!await userManager.IsInRoleAsync(admin, "Admin"))
         {
-            await userManager.AddToRoleAsync(admin, "Admin");
+            var roleResult = await userManager.AddToRoleAsync(admin, "Admin");
+            if (!roleResult.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to assign the Admin role: {string.Join("; ", roleResult.Errors.Select(error => error.Description))}");
+            }
         }
 
         if (!await context.Products.AnyAsync())
@@ -140,8 +150,7 @@ public static class SeedData
             };
 
             await context.Products.AddRangeAsync(products);
+            await context.SaveChangesAsync();
         }
-
-        await context.SaveChangesAsync();
     }
 }
