@@ -1,2 +1,1 @@
-// SeedData is currently defined in ShopApi/DTOs/ApiDtos.cs.
-// This file intentionally contains no duplicate JwtTokenService definition.
+// Local JWT issuance has been removed. UserManagement is the sole user and token authority.
