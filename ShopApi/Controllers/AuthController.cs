@@ -2,22 +2,6 @@ using ShopApi.Models;
 
 namespace ShopApi.DTOs;
 
-public record RegisterRequestDto(
-    string FirstName,
-    string LastName,
-    string Email,
-    string Password);
-
-public record LoginRequestDto(string Email, string Password);
-
-public record AuthResponseDto(
-    string UserId,
-    string Email,
-    string FullName,
-    IEnumerable<string> Roles,
-    string Token,
-    DateTime ExpiresAt);
-
 public record CategoryDto(int Id, string Name, string? Description);
 
 public record ProductDto(
