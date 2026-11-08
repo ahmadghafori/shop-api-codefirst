@@ -55,13 +55,15 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var migrations = db.Database.GetMigrations();
 
-    try
+    if (migrations.Any())
     {
         await db.Database.MigrateAsync();
     }
-    catch
+    else
     {
+        // No migration has been added yet; create the schema from the current EF model.
         await db.Database.EnsureCreatedAsync();
     }
 
