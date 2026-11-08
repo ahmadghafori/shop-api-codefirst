@@ -52,6 +52,22 @@ builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 
 var app = builder.Build();
 
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+    try
+    {
+        await db.Database.MigrateAsync();
+    }
+    catch
+    {
+        await db.Database.EnsureCreatedAsync();
+    }
+
+    await SeedData.InitializeAsync(scope.ServiceProvider);
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -62,10 +78,5 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
-
-using (var scope = app.Services.CreateScope())
-{
-    await SeedData.InitializeAsync(scope.ServiceProvider);
-}
 
 app.Run();
