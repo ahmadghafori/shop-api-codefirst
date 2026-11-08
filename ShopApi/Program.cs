@@ -46,10 +46,10 @@ builder.Services.AddAuthentication(options =>
             var userId = principal.FindFirstValue("ASI_UserID") ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
             var userName = principal.FindFirstValue("ASI_UserName") ?? principal.FindFirstValue(ClaimTypes.Name);
 
-            if (!string.IsNullOrWhiteSpace(userId) && string.IsNullOrWhiteSpace(identity.FindFirstValue(ClaimTypes.NameIdentifier)))
+            if (!string.IsNullOrWhiteSpace(userId) && identity.FindFirst(ClaimTypes.NameIdentifier) is null)
                 identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, userId));
 
-            if (!string.IsNullOrWhiteSpace(userName) && string.IsNullOrWhiteSpace(identity.FindFirstValue(ClaimTypes.Name)))
+            if (!string.IsNullOrWhiteSpace(userName) && identity.FindFirst(ClaimTypes.Name) is null)
                 identity.AddClaim(new Claim(ClaimTypes.Name, userName));
 
             return Task.CompletedTask;
